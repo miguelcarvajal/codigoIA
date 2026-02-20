@@ -33,16 +33,27 @@ type JsonLdArticle = {
 };
 
 const ALLOWED_DOMAINS = [
+  "abc.es",
   "colpisa.com",
   "elcorreo.com",
   "diariovasco.com",
-  "ideal.es",
-  "elcomercio.es",
-  "leonoticias.com",
   "eldiariomontanes.es",
-  "hoy.es",
-  "diariolarioja.com",
   "laverdad.es",
+  "ideal.es",
+  "hoy.es",
+  "sur.es",
+  "larioja.com",
+  "diariolarioja.com",
+  "elnortedecastilla.es",
+  "elcomercio.es",
+  "lasprovincias.es",
+  "lavozdigital.es",
+  "burgosconecta.es",
+  "leonoticias.com",
+  "elbierzonoticias.com",
+  "salamancahoy.es",
+  "todoalicante.es",
+  "huelva24.com",
 ];
 
 const MAX_ARTICLES = 60;
