@@ -63,7 +63,7 @@ export default function Home() {
           <h1>Descarga tus artículos por URL de autor</h1>
           <p className="subtitle">
             Pega la URL de tu perfil de autor en cualquier diario de Vocento y descarga todos tus
-            textos en el formato perfecto para análisis.
+            titulares, subtítulos y descriptores en el formato perfecto para análisis.
           </p>
         </div>
 

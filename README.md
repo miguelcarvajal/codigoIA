@@ -1,10 +1,11 @@
 # Vocento Article Exporter
 
-Web app en Next.js para que redactores de periódicos del grupo Vocento descarguen sus artículos a partir de la URL de autor.
+Web app en Next.js para que redactores de periódicos del grupo Vocento descarguen vistas previas de sus artículos (titular, subtítulo, descriptor y metadatos) a partir de la URL de autor.
 
 ## Funcionalidades
 
 - Entrada de URL de autor (por ejemplo `https://www.laverdad.es/autor/...`).
+- Recoge hasta 60 resultados por autor (incluyendo paginación/"Ver más noticias" cuando está accesible por URL).
 - Exportación en:
   - CSV
   - JSON
