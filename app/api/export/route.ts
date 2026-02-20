@@ -17,6 +17,11 @@ type AuthorContext = {
   authorName: string;
 };
 
+type FetchPayload = {
+  html: string;
+  extraUrls: URL[];
+};
+
 const ALLOWED_DOMAINS = [
   "colpisa.com",
   "elcorreo.com",
@@ -31,7 +36,7 @@ const ALLOWED_DOMAINS = [
 ];
 
 const MAX_ARTICLES = 60;
-const MAX_PAGES = 12;
+const MAX_PAGES = 30;
 
 export async function POST(request: NextRequest) {
   try {
@@ -72,7 +77,6 @@ export async function POST(request: NextRequest) {
   }
 }
 
-
 function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
@@ -109,44 +113,64 @@ function parseAndValidateAuthorUrl(input: string): AuthorContext {
 }
 
 async function collectAuthorPreviews(context: AuthorContext): Promise<ArticlePreview[]> {
-  const toVisit = new Set<string>([context.canonicalUrl.toString()]);
-  for (let i = 2; i <= MAX_PAGES; i += 1) {
-    toVisit.add(withPageParam(context.canonicalUrl, "page", i).toString());
-    toVisit.add(withPageParam(context.canonicalUrl, "pagina", i).toString());
-    toVisit.add(withPageParam(context.canonicalUrl, "_page", i).toString());
-  }
-
+  const queue: string[] = seedAuthorUrls(context.canonicalUrl);
+  const queued = new Set(queue);
   const visited = new Set<string>();
   const articlesByUrl = new Map<string, ArticlePreview>();
 
-  for (const pageUrl of toVisit) {
-    if (articlesByUrl.size >= MAX_ARTICLES || visited.size >= MAX_PAGES) {
-      break;
-    }
-
-    visited.add(pageUrl);
-    const html = await fetchTextSafe(pageUrl);
-    if (!html) {
+  while (queue.length > 0 && visited.size < MAX_PAGES && articlesByUrl.size < MAX_ARTICLES) {
+    const pageUrl = queue.shift();
+    if (!pageUrl || visited.has(pageUrl)) {
       continue;
     }
 
-    const discoveredLoadMoreUrls = discoverLoadMoreUrls(html, context.canonicalUrl);
-    discoveredLoadMoreUrls.forEach((url) => {
-      if (visited.size + toVisit.size < MAX_PAGES * 3) {
-        toVisit.add(url.toString());
-      }
-    });
+    visited.add(pageUrl);
 
-    const pageItems = extractArticlePreviewsFromAuthorHtml(html, context);
+    const payload = await fetchPayload(pageUrl, context.canonicalUrl);
+    if (!payload) {
+      continue;
+    }
 
+    const pageItems = extractArticlePreviewsFromAuthorHtml(payload.html, context);
     pageItems.forEach((item) => {
       if (!articlesByUrl.has(item.url) && articlesByUrl.size < MAX_ARTICLES) {
         articlesByUrl.set(item.url, item);
       }
     });
+
+    const nextUrls = [
+      ...discoverLoadMoreUrls(payload.html, context.canonicalUrl),
+      ...discoverNextRelUrls(payload.html, context.canonicalUrl),
+      ...payload.extraUrls,
+    ];
+
+    nextUrls.forEach((url) => {
+      if (
+        queue.length + visited.size < MAX_PAGES * 4 &&
+        isPotentialAuthorPagination(url, context) &&
+        !queued.has(url.toString())
+      ) {
+        queue.push(url.toString());
+        queued.add(url.toString());
+      }
+    });
   }
 
   return [...articlesByUrl.values()].slice(0, MAX_ARTICLES);
+}
+
+function seedAuthorUrls(base: URL): string[] {
+  const urls = new Set<string>([base.toString()]);
+
+  for (let i = 2; i <= MAX_PAGES; i += 1) {
+    urls.add(withPageParam(base, "page", i).toString());
+    urls.add(withPageParam(base, "pagina", i).toString());
+    urls.add(withPageParam(base, "_page", i).toString());
+    urls.add(withPageParam(base, "offset", (i - 1) * 10).toString());
+    urls.add(withPathPage(base, i).toString());
+  }
+
+  return [...urls];
 }
 
 function withPageParam(base: URL, param: string, value: number): URL {
@@ -155,27 +179,90 @@ function withPageParam(base: URL, param: string, value: number): URL {
   return next;
 }
 
-async function fetchTextSafe(url: string): Promise<string | null> {
+function withPathPage(base: URL, page: number): URL {
+  const next = new URL(base.toString());
+  next.pathname = next.pathname.replace(/\.html$/, `/${page}.html`);
+  return next;
+}
+
+async function fetchPayload(url: string, baseUrl: URL): Promise<FetchPayload | null> {
   try {
-    return await fetchText(url);
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (compatible; VocentoArticleExporter/1.0)",
+        Accept: "text/html,application/xhtml+xml,application/json",
+      },
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+    const text = await response.text();
+
+    if (contentType.includes("application/json") || looksLikeJson(text)) {
+      return extractFromJsonPayload(text, baseUrl);
+    }
+
+    return {
+      html: text,
+      extraUrls: [],
+    };
   } catch {
     return null;
   }
 }
 
-async function fetchText(url: string): Promise<string> {
-  const response = await fetch(url, {
-    headers: {
-      "User-Agent": "Mozilla/5.0 (compatible; VocentoArticleExporter/1.0)",
-      Accept: "text/html,application/xhtml+xml",
-    },
-  });
+function looksLikeJson(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed.startsWith("{") || trimmed.startsWith("[");
+}
 
-  if (!response.ok) {
-    throw new Error(`No se pudo abrir ${url}. Estado: ${response.status}`);
+function extractFromJsonPayload(jsonText: string, baseUrl: URL): FetchPayload {
+  try {
+    const parsed = JSON.parse(jsonText) as unknown;
+    const htmlParts: string[] = [];
+    const urls: URL[] = [];
+
+    walkJson(parsed, (value) => {
+      if (/<(article|div|li|section|a|time)\b/i.test(value)) {
+        htmlParts.push(value);
+      }
+      if (/https?:\/\//i.test(value) || value.startsWith("/")) {
+        const normalized = normalizeUrl(value, baseUrl);
+        if (normalized) {
+          urls.push(normalized);
+        }
+      }
+    });
+
+    return {
+      html: htmlParts.join("\n"),
+      extraUrls: urls,
+    };
+  } catch {
+    return {
+      html: "",
+      extraUrls: [],
+    };
+  }
+}
+
+function walkJson(input: unknown, onString: (value: string) => void) {
+  if (typeof input === "string") {
+    onString(input);
+    return;
   }
 
-  return response.text();
+  if (Array.isArray(input)) {
+    input.forEach((item) => walkJson(item, onString));
+    return;
+  }
+
+  if (input && typeof input === "object") {
+    Object.values(input).forEach((value) => walkJson(value, onString));
+  }
 }
 
 function discoverLoadMoreUrls(html: string, baseUrl: URL): URL[] {
@@ -189,7 +276,7 @@ function discoverLoadMoreUrls(html: string, baseUrl: URL): URL[] {
     }
   }
 
-  const attrRegex = /(data-url|data-next|data-href|href)=["']([^"']+)["']/gi;
+  const attrRegex = /(data-url|data-next|data-href|href|data-endpoint|data-api-url)=["']([^"']+)["']/gi;
   for (const match of html.matchAll(attrRegex)) {
     const raw = match[2];
     const normalized = normalizeUrl(raw, baseUrl);
@@ -201,6 +288,20 @@ function discoverLoadMoreUrls(html: string, baseUrl: URL): URL[] {
   return [...results].map((value) => new URL(value, baseUrl));
 }
 
+function discoverNextRelUrls(html: string, baseUrl: URL): URL[] {
+  const results: URL[] = [];
+  const relNextRegex = /<link[^>]*rel=["']next["'][^>]*href=["']([^"']+)["'][^>]*>/gi;
+
+  for (const match of html.matchAll(relNextRegex)) {
+    const normalized = normalizeUrl(match[1], baseUrl);
+    if (normalized) {
+      results.push(normalized);
+    }
+  }
+
+  return results;
+}
+
 function looksLikeLoadMoreUrl(url: string): boolean {
   const lower = url.toLowerCase();
   return lower.includes("autor") && (
@@ -210,7 +311,23 @@ function looksLikeLoadMoreUrl(url: string): boolean {
     lower.includes("offset=") ||
     lower.includes("load") ||
     lower.includes("more") ||
-    lower.includes("ajax")
+    lower.includes("ajax") ||
+    lower.includes("siguiente") ||
+    lower.includes("next")
+  );
+}
+
+function isPotentialAuthorPagination(url: URL, context: AuthorContext): boolean {
+  if (!isSameVocentoFamilyHost(url.hostname)) {
+    return false;
+  }
+
+  const path = url.pathname.toLowerCase();
+  const authorPathBase = context.canonicalUrl.pathname.toLowerCase().replace(/\.html$/, "");
+
+  return (
+    path.includes("/autor/") &&
+    (path.includes(authorPathBase) || normalizeText(path).includes(context.authorSlug))
   );
 }
 
@@ -237,8 +354,6 @@ function extractArticlePreviewsFromAuthorHtml(html: string, context: AuthorConte
     const descriptor = cleanHtml(extractByClass(card, ["descriptor", "antetitulo", "kicker", "volanta"])) || "";
     const publishedAt = extractTimeDatetime(card) || cleanHtml(extractByClass(card, ["fecha", "date", "time"])) || "";
 
-    const author = context.authorName;
-
     if (!isSameVocentoFamilyHost(url.hostname)) {
       return;
     }
@@ -253,7 +368,7 @@ function extractArticlePreviewsFromAuthorHtml(html: string, context: AuthorConte
       descriptor,
       url: url.toString(),
       publishedAt,
-      author,
+      author: context.authorName,
     });
   });
 
@@ -263,7 +378,7 @@ function extractArticlePreviewsFromAuthorHtml(html: string, context: AuthorConte
 function extractFallbackCardBlocks(html: string): string[] {
   const divCards = [...html.matchAll(/<div[^>]*class=["'][^"']*(noticia|news|story|item)[^"']*["'][\s\S]*?<\/div>/gi)]
     .map((item) => item[0]);
-  return divCards.slice(0, 300);
+  return divCards.slice(0, 600);
 }
 
 function extractMainArticleLink(block: string, baseUrl: URL): URL | null {
