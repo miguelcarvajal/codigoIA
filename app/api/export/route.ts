@@ -15,11 +15,21 @@ type AuthorContext = {
   canonicalUrl: URL;
   authorSlug: string;
   authorName: string;
+  authorId: string;
 };
 
 type FetchPayload = {
   html: string;
   extraUrls: URL[];
+};
+
+type JsonLdArticle = {
+  headline?: string;
+  name?: string;
+  description?: string;
+  articleSection?: string;
+  datePublished?: string;
+  author?: unknown;
 };
 
 const ALLOWED_DOMAINS = [
@@ -36,7 +46,8 @@ const ALLOWED_DOMAINS = [
 ];
 
 const MAX_ARTICLES = 60;
-const MAX_PAGES = 30;
+const MAX_PAGES = 40;
+const ENRICH_CONCURRENCY = 6;
 
 export async function POST(request: NextRequest) {
   try {
@@ -49,16 +60,17 @@ export async function POST(request: NextRequest) {
     }
 
     const context = parseAndValidateAuthorUrl(authorUrl);
-    const articles = await collectAuthorPreviews(context);
+    const baseArticles = await collectAuthorPreviews(context);
+    const enrichedArticles = await enrichArticles(baseArticles, context.authorName);
 
-    if (articles.length === 0) {
+    if (enrichedArticles.length === 0) {
       return NextResponse.json(
         { error: "No se han encontrado artículos en la página de autor indicada." },
         { status: 404 },
       );
     }
 
-    const file = buildExport(articles, format);
+    const file = buildExport(enrichedArticles, format);
     const extension = format === "markdown" ? "md" : format;
 
     const payload = typeof file.content === "string"
@@ -98,7 +110,9 @@ function parseAndValidateAuthorUrl(input: string): AuthorContext {
   }
 
   const slugWithId = parsed.pathname.split("/autor/")[1]?.replace(/^\/+/, "") ?? "";
-  const slugBase = slugWithId.replace(/\.html$/, "").replace(/-\d+$/, "");
+  const slugWithoutExt = slugWithId.replace(/\.html$/, "");
+  const authorId = /-(\d+)$/.exec(slugWithoutExt)?.[1] ?? "";
+  const slugBase = slugWithoutExt.replace(/-\d+$/, "");
   const authorName = slugBase
     .split("-")
     .filter(Boolean)
@@ -109,57 +123,82 @@ function parseAndValidateAuthorUrl(input: string): AuthorContext {
     canonicalUrl: parsed,
     authorSlug: normalizeText(slugBase),
     authorName,
+    authorId,
   };
 }
 
 async function collectAuthorPreviews(context: AuthorContext): Promise<ArticlePreview[]> {
-  const queue: string[] = seedAuthorUrls(context.canonicalUrl);
+  const queue: string[] = seedAuthorUrls(context.canonicalUrl, context);
   const queued = new Set(queue);
   const visited = new Set<string>();
-  const articlesByUrl = new Map<string, ArticlePreview>();
+  const articleMap = new Map<string, ArticlePreview>();
+  const feedUrls = new Set<string>();
 
-  while (queue.length > 0 && visited.size < MAX_PAGES && articlesByUrl.size < MAX_ARTICLES) {
-    const pageUrl = queue.shift();
-    if (!pageUrl || visited.has(pageUrl)) {
+  while (queue.length > 0 && visited.size < MAX_PAGES && articleMap.size < MAX_ARTICLES) {
+    const next = queue.shift();
+    if (!next || visited.has(next)) {
       continue;
     }
 
-    visited.add(pageUrl);
+    visited.add(next);
 
-    const payload = await fetchPayload(pageUrl, context.canonicalUrl);
-    if (!payload) {
+    const payload = await fetchPayload(next, context.canonicalUrl);
+    if (!payload || !payload.html) {
       continue;
     }
 
-    const pageItems = extractArticlePreviewsFromAuthorHtml(payload.html, context);
-    pageItems.forEach((item) => {
-      if (!articlesByUrl.has(item.url) && articlesByUrl.size < MAX_ARTICLES) {
-        articlesByUrl.set(item.url, item);
+    const fromCards = extractArticlePreviewsFromAuthorHtml(payload.html, context);
+    const fromLinks = extractArticleLinksAsPreviews(payload.html, context);
+
+    [...fromCards, ...fromLinks].forEach((item) => {
+      if (!articleMap.has(item.url) && articleMap.size < MAX_ARTICLES) {
+        articleMap.set(item.url, item);
       }
     });
 
+    discoverFeedUrls(payload.html, context.canonicalUrl).forEach((feed) => feedUrls.add(feed.toString()));
+
     const nextUrls = [
       ...discoverLoadMoreUrls(payload.html, context.canonicalUrl),
+      ...discoverScriptPaginationUrls(payload.html, context.canonicalUrl, context),
       ...discoverNextRelUrls(payload.html, context.canonicalUrl),
       ...payload.extraUrls,
     ];
 
     nextUrls.forEach((url) => {
+      const value = url.toString();
       if (
-        queue.length + visited.size < MAX_PAGES * 4 &&
-        isPotentialAuthorPagination(url, context) &&
-        !queued.has(url.toString())
+        !queued.has(value) &&
+        queue.length + visited.size < MAX_PAGES * 6 &&
+        isPotentialAuthorPagination(url, context)
       ) {
-        queue.push(url.toString());
-        queued.add(url.toString());
+        queue.push(value);
+        queued.add(value);
       }
     });
   }
 
-  return [...articlesByUrl.values()].slice(0, MAX_ARTICLES);
+  for (const feed of feedUrls) {
+    if (articleMap.size >= MAX_ARTICLES) {
+      break;
+    }
+    const payload = await fetchPayload(feed, context.canonicalUrl);
+    if (!payload || !payload.html) {
+      continue;
+    }
+
+    const rssItems = extractRssItems(payload.html, context.authorName, context.canonicalUrl);
+    rssItems.forEach((item) => {
+      if (!articleMap.has(item.url) && articleMap.size < MAX_ARTICLES) {
+        articleMap.set(item.url, item);
+      }
+    });
+  }
+
+  return [...articleMap.values()].slice(0, MAX_ARTICLES);
 }
 
-function seedAuthorUrls(base: URL): string[] {
+function seedAuthorUrls(base: URL, context?: AuthorContext): string[] {
   const urls = new Set<string>([base.toString()]);
 
   for (let i = 2; i <= MAX_PAGES; i += 1) {
@@ -168,6 +207,12 @@ function seedAuthorUrls(base: URL): string[] {
     urls.add(withPageParam(base, "_page", i).toString());
     urls.add(withPageParam(base, "offset", (i - 1) * 10).toString());
     urls.add(withPathPage(base, i).toString());
+  }
+
+  if (context?.authorId) {
+    urls.add(new URL(`/rss/2.0/?author=${context.authorId}`, base).toString());
+    urls.add(new URL(`/rss/2.0/?autor=${context.authorId}`, base).toString());
+    urls.add(new URL(`/rss/2.0/?writer=${context.authorId}`, base).toString());
   }
 
   return [...urls];
@@ -190,7 +235,7 @@ async function fetchPayload(url: string, baseUrl: URL): Promise<FetchPayload | n
     const response = await fetch(url, {
       headers: {
         "User-Agent": "Mozilla/5.0 (compatible; VocentoArticleExporter/1.0)",
-        Accept: "text/html,application/xhtml+xml,application/json",
+        Accept: "text/html,application/xhtml+xml,application/xml,application/json",
       },
     });
 
@@ -205,10 +250,7 @@ async function fetchPayload(url: string, baseUrl: URL): Promise<FetchPayload | n
       return extractFromJsonPayload(text, baseUrl);
     }
 
-    return {
-      html: text,
-      extraUrls: [],
-    };
+    return { html: text, extraUrls: [] };
   } catch {
     return null;
   }
@@ -229,6 +271,7 @@ function extractFromJsonPayload(jsonText: string, baseUrl: URL): FetchPayload {
       if (/<(article|div|li|section|a|time)\b/i.test(value)) {
         htmlParts.push(value);
       }
+
       if (/https?:\/\//i.test(value) || value.startsWith("/")) {
         const normalized = normalizeUrl(value, baseUrl);
         if (normalized) {
@@ -242,10 +285,7 @@ function extractFromJsonPayload(jsonText: string, baseUrl: URL): FetchPayload {
       extraUrls: urls,
     };
   } catch {
-    return {
-      html: "",
-      extraUrls: [],
-    };
+    return { html: "", extraUrls: [] };
   }
 }
 
@@ -268,7 +308,6 @@ function walkJson(input: unknown, onString: (value: string) => void) {
 function discoverLoadMoreUrls(html: string, baseUrl: URL): URL[] {
   const results = new Set<string>();
   const absoluteUrlRegex = /https?:\/\/[^"'\s<>()]+/gi;
-
   for (const match of html.matchAll(absoluteUrlRegex)) {
     const value = match[0];
     if (looksLikeLoadMoreUrl(value)) {
@@ -278,14 +317,81 @@ function discoverLoadMoreUrls(html: string, baseUrl: URL): URL[] {
 
   const attrRegex = /(data-url|data-next|data-href|href|data-endpoint|data-api-url)=["']([^"']+)["']/gi;
   for (const match of html.matchAll(attrRegex)) {
-    const raw = match[2];
-    const normalized = normalizeUrl(raw, baseUrl);
+    const normalized = normalizeUrl(match[2], baseUrl);
     if (normalized && looksLikeLoadMoreUrl(normalized.toString())) {
       results.add(normalized.toString());
     }
   }
 
   return [...results].map((value) => new URL(value, baseUrl));
+}
+
+
+function discoverScriptPaginationUrls(html: string, baseUrl: URL, context: AuthorContext): URL[] {
+  const results = new Set<string>();
+  const scriptBlocks = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)].map((m) => m[1]);
+
+  scriptBlocks.forEach((block) => {
+    const decoded = block.replace(/\\\//g, "/");
+
+    for (const m of decoded.matchAll(/https?:\/\/[^"'\s<>()]+/gi)) {
+      if (looksLikeLoadMoreUrl(m[0])) {
+        results.add(m[0]);
+      }
+    }
+
+    for (const m of decoded.matchAll(/(["'])(\/[^"']*\/autor\/[^"']+)\1/gi)) {
+      const normalized = normalizeUrl(m[2], baseUrl);
+      if (normalized && isPotentialAuthorPagination(normalized, context)) {
+        results.add(normalized.toString());
+      }
+    }
+
+    const pageHint = /(?:page|pagina|_page|offset)\s*[:=]\s*([0-9]{1,3})/i.exec(decoded)?.[1];
+    if (pageHint) {
+      const n = Number(pageHint);
+      if (Number.isFinite(n) && n > 1 && n <= MAX_PAGES * 3) {
+        results.add(withPageParam(baseUrl, "page", n).toString());
+        results.add(withPageParam(baseUrl, "pagina", n).toString());
+        results.add(withPageParam(baseUrl, "_page", n).toString());
+      }
+    }
+  });
+
+  return [...results].map((value) => new URL(value, baseUrl));
+}
+
+function extractArticleLinksAsPreviews(html: string, context: AuthorContext): ArticlePreview[] {
+  const out: ArticlePreview[] = [];
+  const seen = new Set<string>();
+
+  for (const m of html.matchAll(/<a[^>]*href=["']([^"']+\.html)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
+    const url = normalizeUrl(m[1], context.canonicalUrl);
+    if (!url || seen.has(url.toString())) {
+      continue;
+    }
+
+    if (!isSameVocentoFamilyHost(url.hostname) || url.pathname.includes("/autor/")) {
+      continue;
+    }
+
+    const title = cleanHtml(m[2]);
+    if (!title || title.length < 12) {
+      continue;
+    }
+
+    out.push({
+      title,
+      subtitle: "",
+      descriptor: "",
+      url: url.toString(),
+      publishedAt: "",
+      author: context.authorName,
+    });
+    seen.add(url.toString());
+  }
+
+  return out;
 }
 
 function discoverNextRelUrls(html: string, baseUrl: URL): URL[] {
@@ -300,6 +406,32 @@ function discoverNextRelUrls(html: string, baseUrl: URL): URL[] {
   }
 
   return results;
+}
+
+function discoverFeedUrls(html: string, baseUrl: URL): URL[] {
+  const results = new Set<string>();
+  const feedRegex = /<link[^>]*(type=["']application\/(rss\+xml|atom\+xml)["'][^>]*href=["']([^"']+)["']|href=["']([^"']+)["'][^>]*type=["']application\/(rss\+xml|atom\+xml)["'])[^>]*>/gi;
+
+  for (const match of html.matchAll(feedRegex)) {
+    const raw = match[3] ?? match[4];
+    if (!raw) {
+      continue;
+    }
+    const normalized = normalizeUrl(raw, baseUrl);
+    if (normalized) {
+      results.add(normalized.toString());
+    }
+  }
+
+  const rawUrls = [...html.matchAll(/https?:\/\/[^"'\s<>()]+/gi)].map((m) => m[0]);
+  rawUrls.forEach((url) => {
+    const lower = url.toLowerCase();
+    if (lower.includes("rss") || lower.includes("feed") || lower.endsWith(".xml")) {
+      results.add(url);
+    }
+  });
+
+  return [...results].map((value) => new URL(value, baseUrl));
 }
 
 function looksLikeLoadMoreUrl(url: string): boolean {
@@ -323,23 +455,20 @@ function isPotentialAuthorPagination(url: URL, context: AuthorContext): boolean 
   }
 
   const path = url.pathname.toLowerCase();
-  const authorPathBase = context.canonicalUrl.pathname.toLowerCase().replace(/\.html$/, "");
+  const authorPath = context.canonicalUrl.pathname.toLowerCase().replace(/\.html$/, "");
 
-  return (
-    path.includes("/autor/") &&
-    (path.includes(authorPathBase) || normalizeText(path).includes(context.authorSlug))
-  );
+  return path.includes("/autor/") && (path.includes(authorPath) || normalizeText(path).includes(context.authorSlug));
 }
 
 function extractArticlePreviewsFromAuthorHtml(html: string, context: AuthorContext): ArticlePreview[] {
-  const articleBlocks = [...html.matchAll(/<article[\s\S]*?<\/article>/gi)].map((item) => item[0]);
-  const cards = articleBlocks.length > 0 ? articleBlocks : extractFallbackCardBlocks(html);
+  const blocks = [...html.matchAll(/<article[\s\S]*?<\/article>/gi)].map((m) => m[0]);
+  const cards = blocks.length > 0 ? blocks : extractFallbackCardBlocks(html);
 
   const previews: ArticlePreview[] = [];
 
   cards.forEach((card) => {
     const url = extractMainArticleLink(card, context.canonicalUrl);
-    if (!url) {
+    if (!url || !isSameVocentoFamilyHost(url.hostname)) {
       return;
     }
 
@@ -351,16 +480,9 @@ function extractArticlePreviewsFromAuthorHtml(html: string, context: AuthorConte
     const subtitle = cleanHtml(extractByClass(card, ["subtitulo", "subtitle", "entradilla", "resumen"])) ||
       cleanHtml(extractFirstParagraph(card));
 
-    const descriptor = cleanHtml(extractByClass(card, ["descriptor", "antetitulo", "kicker", "volanta"])) || "";
+    const descriptor = cleanHtml(extractByClass(card, ["descriptor", "antetitulo", "kicker", "volanta", "seccion"])) || "";
     const publishedAt = extractTimeDatetime(card) || cleanHtml(extractByClass(card, ["fecha", "date", "time"])) || "";
-
-    if (!isSameVocentoFamilyHost(url.hostname)) {
-      return;
-    }
-
-    if (!matchesAuthorContext(card, context) && !matchesAuthorContext(url.pathname, context)) {
-      return;
-    }
+    const author = cleanHtml(extractByClass(card, ["author", "autor", "firma"])) || context.authorName;
 
     previews.push({
       title,
@@ -368,22 +490,219 @@ function extractArticlePreviewsFromAuthorHtml(html: string, context: AuthorConte
       descriptor,
       url: url.toString(),
       publishedAt,
-      author: context.authorName,
+      author,
     });
   });
 
   return previews;
 }
 
+function extractRssItems(xml: string, fallbackAuthor: string, baseUrl: URL): ArticlePreview[] {
+  const itemRegex = /<(item|entry)\b[\s\S]*?<\/(item|entry)>/gi;
+  const out: ArticlePreview[] = [];
+
+  for (const match of xml.matchAll(itemRegex)) {
+    const block = match[0];
+    const rawUrl = extractXmlTag(block, "link") || /<link[^>]*href=["']([^"']+)["']/i.exec(block)?.[1] || "";
+    const normalized = normalizeUrl(rawUrl, baseUrl);
+
+    if (!normalized || !normalized.pathname.endsWith(".html") || !isSameVocentoFamilyHost(normalized.hostname)) {
+      continue;
+    }
+
+    out.push({
+      title: cleanHtml(extractXmlTag(block, "title")) || "Sin titular",
+      subtitle: cleanHtml(extractXmlTag(block, "description") || extractXmlTag(block, "summary")),
+      descriptor: cleanHtml(extractXmlTag(block, "category")),
+      url: normalized.toString(),
+      publishedAt: cleanHtml(extractXmlTag(block, "pubDate") || extractXmlTag(block, "updated") || extractXmlTag(block, "published")),
+      author: cleanHtml(extractXmlTag(block, "author") || extractXmlTag(block, "dc:creator")) || fallbackAuthor,
+    });
+  }
+
+  return out;
+}
+
+async function enrichArticles(items: ArticlePreview[], fallbackAuthor: string): Promise<ArticlePreview[]> {
+  const limited = items.slice(0, MAX_ARTICLES);
+  const result: ArticlePreview[] = [];
+
+  for (let i = 0; i < limited.length; i += ENRICH_CONCURRENCY) {
+    const chunk = limited.slice(i, i + ENRICH_CONCURRENCY);
+    const enriched = await Promise.all(chunk.map(async (item) => enrichOneArticle(item, fallbackAuthor)));
+    enriched.forEach((item) => result.push(item));
+  }
+
+  return result;
+}
+
+async function enrichOneArticle(item: ArticlePreview, fallbackAuthor: string): Promise<ArticlePreview> {
+  const payload = await fetchPayload(item.url, new URL(item.url));
+  if (!payload || !payload.html) {
+    return item;
+  }
+
+  const html = payload.html;
+  const jsonLd = extractNewsArticleFromJsonLd(html);
+
+  const title =
+    jsonLd.title ||
+    cleanHtml(extractMetaContent(html, "property", "og:title")) ||
+    cleanHtml(extractTagContent(html, "h1")) ||
+    cleanHtml(extractTagContent(html, "title")) ||
+    item.title;
+
+  const subtitle =
+    jsonLd.subtitle ||
+    cleanHtml(extractMetaContent(html, "property", "og:description")) ||
+    cleanHtml(extractMetaContent(html, "name", "description")) ||
+    cleanHtml(extractByClass(html, ["subtitulo", "subtitle", "entradilla", "resumen"])) ||
+    item.subtitle;
+
+  const descriptor =
+    jsonLd.descriptor ||
+    cleanHtml(extractMetaContent(html, "property", "article:section")) ||
+    cleanHtml(extractByClass(html, ["descriptor", "antetitulo", "kicker", "volanta", "seccion"])) ||
+    item.descriptor;
+
+  const publishedAt =
+    jsonLd.publishedAt ||
+    cleanHtml(extractMetaContent(html, "property", "article:published_time")) ||
+    extractTimeDatetime(html) ||
+    item.publishedAt;
+
+  const author =
+    jsonLd.author ||
+    cleanHtml(extractMetaContent(html, "name", "author")) ||
+    cleanHtml(extractMetaContent(html, "property", "article:author")) ||
+    cleanHtml(extractByClass(html, ["author", "autor", "firma"])) ||
+    item.author || fallbackAuthor;
+
+  return {
+    ...item,
+    title,
+    subtitle,
+    descriptor,
+    publishedAt,
+    author,
+  };
+}
+
+
+function extractNewsArticleFromJsonLd(html: string): Partial<ArticlePreview> {
+  const blocks = [...html.matchAll(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)]
+    .map((m) => m[1])
+    .filter(Boolean);
+
+  for (const block of blocks) {
+    try {
+      const parsed = JSON.parse(block) as unknown;
+      const candidate = findNewsArticleNode(parsed);
+      if (!candidate) {
+        continue;
+      }
+
+      const article = candidate as JsonLdArticle;
+      const title = cleanHtml(String(article.headline ?? article.name ?? ""));
+      const subtitle = cleanHtml(String(article.description ?? ""));
+      const descriptor = cleanHtml(String(article.articleSection ?? ""));
+      const publishedAt = cleanHtml(String(article.datePublished ?? ""));
+      const author = cleanHtml(extractAuthorFromJsonLd(article.author));
+
+      return { title, subtitle, descriptor, publishedAt, author };
+    } catch {
+      continue;
+    }
+  }
+
+  return {};
+}
+
+function findNewsArticleNode(input: unknown): Record<string, unknown> | null {
+  if (!input) {
+    return null;
+  }
+
+  if (Array.isArray(input)) {
+    for (const item of input) {
+      const found = findNewsArticleNode(item);
+      if (found) {
+        return found;
+      }
+    }
+    return null;
+  }
+
+  if (typeof input === "object") {
+    const obj = input as Record<string, unknown>;
+    const type = String(obj["@type"] ?? "");
+
+    if (["NewsArticle", "Article", "ReportageNewsArticle"].some((t) => type.includes(t))) {
+      return obj;
+    }
+
+    if (Array.isArray(obj["@graph"])) {
+      const found = findNewsArticleNode(obj["@graph"]);
+      if (found) {
+        return found;
+      }
+    }
+
+    for (const value of Object.values(obj)) {
+      const found = findNewsArticleNode(value);
+      if (found) {
+        return found;
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractAuthorFromJsonLd(authorNode: unknown): string {
+  if (typeof authorNode === "string") {
+    return authorNode;
+  }
+
+  if (Array.isArray(authorNode)) {
+    const names = authorNode.map((item) => extractAuthorFromJsonLd(item)).filter(Boolean);
+    return names.join(", ");
+  }
+
+  if (authorNode && typeof authorNode === "object") {
+    const obj = authorNode as Record<string, unknown>;
+    return String(obj.name ?? "");
+  }
+
+  return "";
+}
+
+function extractMetaContent(html: string, attr: "name" | "property", value: string): string {
+  const regex = new RegExp(
+    `<meta[^>]*${attr}=["']${escapeRegex(value)}["'][^>]*content=["']([^"']+)["'][^>]*>`,
+    "i",
+  );
+  const reverse = new RegExp(
+    `<meta[^>]*content=["']([^"']+)["'][^>]*${attr}=["']${escapeRegex(value)}["'][^>]*>`,
+    "i",
+  );
+
+  return regex.exec(html)?.[1] ?? reverse.exec(html)?.[1] ?? "";
+}
+
+function extractXmlTag(xml: string, tag: string): string {
+  const regex = new RegExp(`<${escapeRegex(tag)}[^>]*>([\\s\\S]*?)<\\/${escapeRegex(tag)}>`, "i");
+  return regex.exec(xml)?.[1] ?? "";
+}
+
 function extractFallbackCardBlocks(html: string): string[] {
-  const divCards = [...html.matchAll(/<div[^>]*class=["'][^"']*(noticia|news|story|item)[^"']*["'][\s\S]*?<\/div>/gi)]
-    .map((item) => item[0]);
-  return divCards.slice(0, 600);
+  const blocks = [...html.matchAll(/<(div|li|section)[^>]*class=["'][^"']*(noticia|news|story|item|article)[^"']*["'][\s\S]*?<\/(div|li|section)>/gi)]
+    .map((m) => m[0]);
+  return blocks.slice(0, 800);
 }
 
 function extractMainArticleLink(block: string, baseUrl: URL): URL | null {
   const hrefRegex = /href\s*=\s*["']([^"']+)["']/gi;
-
   for (const match of block.matchAll(hrefRegex)) {
     const normalized = normalizeUrl(match[1], baseUrl);
     if (
@@ -396,17 +715,7 @@ function extractMainArticleLink(block: string, baseUrl: URL): URL | null {
       return normalized;
     }
   }
-
   return null;
-}
-
-function matchesAuthorContext(value: string, context: AuthorContext): boolean {
-  const normalized = normalizeText(cleanHtml(value));
-  if (!normalized) {
-    return true;
-  }
-
-  return normalized.includes(context.authorSlug) || context.authorSlug.includes(normalized);
 }
 
 function isSameVocentoFamilyHost(hostname: string): boolean {
@@ -459,6 +768,7 @@ function extractTimeDatetime(html: string): string {
 function cleanHtml(value: string): string {
   return value
     .replace(/<[^>]+>/g, " ")
+    .replace(/<!\[CDATA\[|\]\]>/g, "")
     .replace(/&nbsp;/gi, " ")
     .replace(/&amp;/gi, "&")
     .replace(/&quot;/gi, '"')
@@ -472,12 +782,6 @@ function cleanHtml(value: string): string {
     .replace(/&uacute;/gi, "ú")
     .replace(/&ntilde;/gi, "ñ")
     .replace(/&uuml;/gi, "ü")
-    .replace(/&Aacute;/g, "Á")
-    .replace(/&Eacute;/g, "É")
-    .replace(/&Iacute;/g, "Í")
-    .replace(/&Oacute;/g, "Ó")
-    .replace(/&Uacute;/g, "Ú")
-    .replace(/&Ntilde;/g, "Ñ")
     .replace(/\s+/g, " ")
     .trim();
 }
