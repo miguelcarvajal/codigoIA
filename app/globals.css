@@ -2,25 +2,118 @@
 
 :root {
   --background: #ffffff;
-  --foreground: #171717;
+  --foreground: #111111;
+  --vocento: #0057b8;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+* {
+  box-sizing: border-box;
 }
 
 body {
-  background: var(--background);
+  margin: 0;
+  background: linear-gradient(180deg, #ffffff 0%, #f3f5f8 100%);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: Inter, Arial, Helvetica, sans-serif;
+}
+
+.app-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 2rem 1rem;
+}
+
+.card {
+  width: min(760px, 100%);
+  background: #fff;
+  border: 1px solid #dbe1ea;
+  border-radius: 20px;
+  box-shadow: 0 16px 40px rgba(17, 17, 17, 0.08);
+  padding: clamp(1.4rem, 3vw, 2.4rem);
+  display: grid;
+  gap: 1.25rem;
+}
+
+.eyebrow {
+  color: var(--vocento);
+  font-weight: 700;
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.78rem;
+}
+
+h1 {
+  margin: 0.35rem 0 0.7rem;
+  font-size: clamp(1.55rem, 2.4vw, 2.3rem);
+  line-height: 1.15;
+}
+
+.subtitle {
+  margin: 0;
+  color: #3f4652;
+  max-width: 62ch;
+}
+
+.export-form {
+  display: grid;
+  gap: 0.72rem;
+}
+
+label {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+input,
+select,
+button {
+  border-radius: 12px;
+  border: 1px solid #cfd8e3;
+  padding: 0.8rem 0.9rem;
+  font-size: 1rem;
+}
+
+input:focus,
+select:focus {
+  outline: 2px solid rgba(0, 87, 184, 0.2);
+  border-color: var(--vocento);
+}
+
+
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none'%3E%3Cpath d='M5 7.5L10 12.5L15 7.5' stroke='%23111111' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-size: 16px 16px;
+  background-position: right 20px center;
+  padding-right: 2.7rem;
+}
+
+button {
+  border: none;
+  background: var(--vocento);
+  color: #fff;
+  cursor: pointer;
+  font-weight: 700;
+  margin-top: 0.55rem;
+  transition: transform 0.1s ease, opacity 0.2s ease;
+}
+
+button:hover {
+  transform: translateY(-1px);
+}
+
+button:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+.status {
+  min-height: 1.4rem;
+  margin: 0;
+  color: #2f3a49;
+  font-weight: 500;
 }
