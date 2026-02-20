@@ -61,7 +61,7 @@ export async function POST(request: NextRequest) {
 
     const context = parseAndValidateAuthorUrl(authorUrl);
     const baseArticles = await collectAuthorPreviews(context);
-    const enrichedArticles = await enrichArticles(baseArticles, context.authorName);
+    const enrichedArticles = await enrichArticles(baseArticles, context.authorName, context);
 
     if (enrichedArticles.length === 0) {
       return NextResponse.json(
@@ -160,6 +160,7 @@ async function collectAuthorPreviews(context: AuthorContext): Promise<ArticlePre
 
     const nextUrls = [
       ...discoverLoadMoreUrls(payload.html, context.canonicalUrl),
+      ...discoverAuthorButtonUrls(payload.html, context),
       ...discoverScriptPaginationUrls(payload.html, context.canonicalUrl, context),
       ...discoverNextRelUrls(payload.html, context.canonicalUrl),
       ...payload.extraUrls,
@@ -207,6 +208,7 @@ function seedAuthorUrls(base: URL, context?: AuthorContext): string[] {
     urls.add(withPageParam(base, "_page", i).toString());
     urls.add(withPageParam(base, "offset", (i - 1) * 10).toString());
     urls.add(withPathPage(base, i).toString());
+    urls.add(withPaginaPath(base, i).toString());
   }
 
   if (context?.authorId) {
@@ -227,6 +229,12 @@ function withPageParam(base: URL, param: string, value: number): URL {
 function withPathPage(base: URL, page: number): URL {
   const next = new URL(base.toString());
   next.pathname = next.pathname.replace(/\.html$/, `/${page}.html`);
+  return next;
+}
+
+function withPaginaPath(base: URL, page: number): URL {
+  const next = new URL(base.toString());
+  next.pathname = next.pathname.replace(/\.html$/, `/pagina-${page}.html`);
   return next;
 }
 
@@ -327,6 +335,42 @@ function discoverLoadMoreUrls(html: string, baseUrl: URL): URL[] {
 }
 
 
+
+function discoverAuthorButtonUrls(html: string, context: AuthorContext): URL[] {
+  const results = new Set<string>();
+  const buttonRegex = /<a[^>]*data-voc-show-news[^>]*>/gi;
+
+  for (const m of html.matchAll(buttonRegex)) {
+    const tag = m[0];
+    const href = /href=["']([^"']+)["']/i.exec(tag)?.[1];
+    const dataPage = /data-page=["']([0-9]{1,3})["']/i.exec(tag)?.[1];
+    const dataId = /data-journalists-id=["']([^"']+)["']/i.exec(tag)?.[1];
+    const dataName = /data-journalists-name=["']([^"']+)["']/i.exec(tag)?.[1];
+
+    if (href) {
+      const normalized = normalizeUrl(href, context.canonicalUrl);
+      if (normalized && isPotentialAuthorPagination(normalized, context)) {
+        results.add(normalized.toString());
+      }
+    }
+
+    if (dataPage) {
+      const n = Number(dataPage);
+      if (Number.isFinite(n) && n > 1) {
+        results.add(withPaginaPath(context.canonicalUrl, n).toString());
+      }
+    }
+
+    if ((dataId && context.authorId && dataId === context.authorId) || (dataName && normalizeText(dataName) === context.authorSlug)) {
+      for (let i = 2; i <= MAX_PAGES; i += 1) {
+        results.add(withPaginaPath(context.canonicalUrl, i).toString());
+      }
+    }
+  }
+
+  return [...results].map((value) => new URL(value, context.canonicalUrl));
+}
+
 function discoverScriptPaginationUrls(html: string, baseUrl: URL, context: AuthorContext): URL[] {
   const results = new Set<string>();
   const scriptBlocks = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)].map((m) => m[1]);
@@ -371,7 +415,7 @@ function extractArticleLinksAsPreviews(html: string, context: AuthorContext): Ar
       continue;
     }
 
-    if (!isSameVocentoFamilyHost(url.hostname) || url.pathname.includes("/autor/")) {
+    if (!isSameVocentoFamilyHost(url.hostname) || url.pathname.includes("/autor/") || !looksLikeArticlePath(url.pathname)) {
       continue;
     }
 
@@ -468,7 +512,7 @@ function extractArticlePreviewsFromAuthorHtml(html: string, context: AuthorConte
 
   cards.forEach((card) => {
     const url = extractMainArticleLink(card, context.canonicalUrl);
-    if (!url || !isSameVocentoFamilyHost(url.hostname)) {
+    if (!url || !isSameVocentoFamilyHost(url.hostname) || !looksLikeArticlePath(url.pathname)) {
       return;
     }
 
@@ -506,7 +550,7 @@ function extractRssItems(xml: string, fallbackAuthor: string, baseUrl: URL): Art
     const rawUrl = extractXmlTag(block, "link") || /<link[^>]*href=["']([^"']+)["']/i.exec(block)?.[1] || "";
     const normalized = normalizeUrl(rawUrl, baseUrl);
 
-    if (!normalized || !normalized.pathname.endsWith(".html") || !isSameVocentoFamilyHost(normalized.hostname)) {
+    if (!normalized || !normalized.pathname.endsWith(".html") || !isSameVocentoFamilyHost(normalized.hostname) || !looksLikeArticlePath(normalized.pathname)) {
       continue;
     }
 
@@ -523,20 +567,24 @@ function extractRssItems(xml: string, fallbackAuthor: string, baseUrl: URL): Art
   return out;
 }
 
-async function enrichArticles(items: ArticlePreview[], fallbackAuthor: string): Promise<ArticlePreview[]> {
+async function enrichArticles(items: ArticlePreview[], fallbackAuthor: string, context?: AuthorContext): Promise<ArticlePreview[]> {
   const limited = items.slice(0, MAX_ARTICLES);
   const result: ArticlePreview[] = [];
 
   for (let i = 0; i < limited.length; i += ENRICH_CONCURRENCY) {
     const chunk = limited.slice(i, i + ENRICH_CONCURRENCY);
-    const enriched = await Promise.all(chunk.map(async (item) => enrichOneArticle(item, fallbackAuthor)));
-    enriched.forEach((item) => result.push(item));
+    const enriched = await Promise.all(chunk.map(async (item) => enrichOneArticle(item, fallbackAuthor, context)));
+    enriched.forEach((item) => {
+      if (item) {
+        result.push(item);
+      }
+    });
   }
 
   return result;
 }
 
-async function enrichOneArticle(item: ArticlePreview, fallbackAuthor: string): Promise<ArticlePreview> {
+async function enrichOneArticle(item: ArticlePreview, fallbackAuthor: string, context?: AuthorContext): Promise<ArticlePreview | null> {
   const payload = await fetchPayload(item.url, new URL(item.url));
   if (!payload || !payload.html) {
     return item;
@@ -577,6 +625,11 @@ async function enrichOneArticle(item: ArticlePreview, fallbackAuthor: string): P
     cleanHtml(extractMetaContent(html, "property", "article:author")) ||
     cleanHtml(extractByClass(html, ["author", "autor", "firma"])) ||
     item.author || fallbackAuthor;
+
+  const normalizedAuthor = normalizeText(author);
+  if (context && normalizedAuthor && normalizedAuthor !== context.authorSlug && !normalizedAuthor.includes(context.authorSlug) && !context.authorSlug.includes(normalizedAuthor)) {
+    return null;
+  }
 
   return {
     ...item,
@@ -710,12 +763,35 @@ function extractMainArticleLink(block: string, baseUrl: URL): URL | null {
       normalized.pathname.endsWith(".html") &&
       !normalized.pathname.includes("/autor/") &&
       !normalized.pathname.includes("/tag/") &&
-      !normalized.pathname.includes("/servicios/")
+      !normalized.pathname.includes("/servicios/") &&
+      looksLikeArticlePath(normalized.pathname)
     ) {
       return normalized;
     }
   }
   return null;
+}
+
+
+function looksLikeArticlePath(pathname: string): boolean {
+  const path = pathname.toLowerCase();
+  const blocked = [
+    "/servicios/",
+    "/contacto",
+    "/condiciones-uso",
+    "/compromisos-periodisticos",
+    "/reglamento",
+    "/servicio-utig",
+    "/temas/generales/",
+    "/areapersonal",
+    "/gestion/",
+  ];
+
+  if (blocked.some((token) => path.includes(token))) {
+    return false;
+  }
+
+  return path.endsWith('.html');
 }
 
 function isSameVocentoFamilyHost(hostname: string): boolean {
