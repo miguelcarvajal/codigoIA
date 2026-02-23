@@ -1,36 +1,66 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Vocento Article Exporter
 
-## Getting Started
+Web app en Next.js para que redactores de periódicos del grupo Vocento descarguen vistas previas de sus artículos (titular, subtítulo, descriptor y metadatos) a partir de la URL de autor.
 
-First, run the development server:
+## Funcionalidades
+
+- Entrada de URL de autor (por ejemplo `https://www.laverdad.es/autor/...`).
+- Recoge hasta 60 resultados por autor (incluyendo paginación/"Ver más noticias" cuando está accesible por URL).
+- Exportación en:
+  - CSV
+  - JSON
+  - Markdown
+  - PDF
+- Interfaz accesible, simple y rápida.
+
+## Requisitos
+
+- Node.js 20+
+- npm 10+
+
+## Desarrollo local
 
 ```bash
+npm ci
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Abrir `http://localhost:3000`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Simular producción en local
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm ci
+npm run build
+npm run start
+```
 
-## Learn More
+Abrir `http://localhost:3000`.
 
-To learn more about Next.js, take a look at the following resources:
+## Probar el endpoint en producción
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+curl -X POST https://TU_DOMINIO/api/export \
+  -H "content-type: application/json" \
+  -d '{"authorUrl":"https://www.laverdad.es/autor/javier-perez-parra-527.html","format":"csv"}' \
+  -o articulos.csv
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+`format` soportados: `csv`, `json`, `markdown`, `pdf`.
 
-## Deploy on Vercel
+## Despliegue recomendado (Vercel)
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+1. Subir este repo a GitHub.
+2. Importar el repo en Vercel.
+3. Hacer deploy.
+4. Verificar UI y endpoint `/api/export`.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+5. (Opcional recomendado) En Vercel, en **Settings → Build & Development Settings**, fija:
+   - **Install Command**: `npm install`
+   - **Build Command**: `npm run build`
+
+
+
+## Nota importante de red
+
+El backend consulta páginas externas de medios Vocento en tiempo real. El entorno de despliegue debe permitir salida HTTPS a esos dominios.
