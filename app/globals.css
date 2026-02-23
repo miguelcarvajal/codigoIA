@@ -117,3 +117,71 @@ button:disabled {
   color: #2f3a49;
   font-weight: 500;
 }
+
+.trends-box {
+  border-top: 1px solid #e2e8f0;
+  padding-top: 1rem;
+  display: grid;
+  gap: 0.8rem;
+}
+
+.trends-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.8rem;
+}
+
+.trends-head h2 {
+  margin: 0;
+  font-size: 1.15rem;
+}
+
+.trends-meta {
+  margin: 0;
+  color: #485264;
+  font-size: 0.92rem;
+}
+
+.trends-error {
+  margin: 0;
+  color: #9f1239;
+  font-weight: 600;
+}
+
+.trends-list h3 {
+  margin: 0.3rem 0;
+  font-size: 1rem;
+}
+
+.trends-list ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.trends-list li {
+  border: 1px solid #dbe1ea;
+  border-radius: 12px;
+  padding: 0.65rem 0.8rem;
+}
+
+.trends-list li p {
+  margin: 0;
+}
+
+.trends-list .chips {
+  margin-top: 0.25rem;
+  color: #334155;
+  font-size: 0.86rem;
+}
+
+.trends-list a {
+  display: inline-block;
+  margin-top: 0.3rem;
+  font-size: 0.88rem;
+  color: var(--vocento);
+  text-decoration: none;
+}

@@ -4,6 +4,34 @@ import { FormEvent, useState } from "react";
 
 type ExportFormat = "csv" | "json" | "markdown" | "pdf";
 
+type TrendSuggestion = {
+  term: string;
+  link?: string;
+  score: number;
+  reasons: {
+    keywordsMatched: string[];
+    relatedArticles: Array<{ title: string; url: string; publishedAt: string }>;
+  };
+};
+
+type TrendsResponse = {
+  geo: string;
+  source: string;
+  generatedAt: string;
+  profileSummary: {
+    topKeywords: string[];
+    topBigrams: string[];
+    topDescriptors: string[];
+    articlesCount: number;
+    dateRange: { min: string | null; max: string | null };
+  };
+  trends: {
+    match: TrendSuggestion[];
+    adjacent: TrendSuggestion[];
+    gaps: TrendSuggestion[];
+  };
+};
+
 const formats: { value: ExportFormat; label: string }[] = [
   { value: "csv", label: "CSV" },
   { value: "json", label: "JSON" },
@@ -16,6 +44,9 @@ export default function Home() {
   const [format, setFormat] = useState<ExportFormat>("csv");
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<string>("");
+  const [trendsLoading, setTrendsLoading] = useState(false);
+  const [trendsError, setTrendsError] = useState("");
+  const [trendsData, setTrendsData] = useState<TrendsResponse | null>(null);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -52,6 +83,35 @@ export default function Home() {
       setStatus(message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleTrends = async () => {
+    setTrendsLoading(true);
+    setTrendsError("");
+
+    try {
+      const response = await fetch("/api/trends-suggestions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ authorUrl, geo: "ES" }),
+      });
+
+      if (!response.ok) {
+        const data = (await response.json()) as { error?: string };
+        throw new Error(data.error ?? "No se pudieron generar sugerencias.");
+      }
+
+      const data = (await response.json()) as TrendsResponse;
+      setTrendsData(data);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "No se pudieron cargar tendencias.";
+      setTrendsError(message);
+      setTrendsData(null);
+    } finally {
+      setTrendsLoading(false);
     }
   };
 
@@ -97,8 +157,59 @@ export default function Home() {
         </form>
 
         <p className="status">{status}</p>
+
+        <div className="trends-box">
+          <div className="trends-head">
+            <h2>Sugerencias de Trends</h2>
+            <button type="button" onClick={handleTrends} disabled={trendsLoading || !authorUrl}>
+              {trendsLoading ? "Analizando..." : "Generar sugerencias"}
+            </button>
+          </div>
+
+          {trendsError ? <p className="trends-error">{trendsError}</p> : null}
+
+          {trendsData ? (
+            <>
+              <p className="trends-meta">
+                {trendsData.profileSummary.articlesCount} artículos analizados · GEO {trendsData.geo}
+              </p>
+              <TrendsList title="Match" items={trendsData.trends.match} />
+              <TrendsList title="Adjacent" items={trendsData.trends.adjacent} />
+              <TrendsList title="Gaps" items={trendsData.trends.gaps} />
+            </>
+          ) : null}
+        </div>
       </section>
     </main>
+  );
+}
+
+function TrendsList({ title, items }: { title: string; items: TrendSuggestion[] }) {
+  if (items.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="trends-list">
+      <h3>{title}</h3>
+      <ul>
+        {items.slice(0, 5).map((item) => (
+          <li key={`${title}-${item.term}`}>
+            <p>
+              <strong>{item.term}</strong> <span>({item.score.toFixed(2)})</span>
+            </p>
+            {item.reasons.keywordsMatched.length > 0 ? (
+              <p className="chips">{item.reasons.keywordsMatched.join(" · ")}</p>
+            ) : null}
+            {item.link ? (
+              <a href={item.link} target="_blank" rel="noreferrer">
+                Ver tendencia
+              </a>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
