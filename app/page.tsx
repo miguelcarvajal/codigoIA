@@ -59,7 +59,7 @@ export default function Home() {
     <main className="app-shell">
       <section className="card" aria-live="polite">
         <div>
-          <p className="eyebrow">Vocento Article Exporter</p>
+          <p className="eyebrow">Generador de archivo para Vocento</p>
           <h1>Descarga tus artículos por URL de autor</h1>
           <p className="subtitle">
             Pega la URL de tu perfil de autor en cualquier diario de Vocento y descarga todos tus
