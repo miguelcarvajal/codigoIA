@@ -73,7 +73,8 @@ type NeonQueryResult<T> = {
 
 const MAX_RECENT_LOGS = 1000;
 const MAX_DAILY_HISTORY_DAYS = 365;
-const DATA_DIR = path.join(process.cwd(), "data");
+const DATA_DIR = process.env.METRICS_DATA_DIR?.trim()
+  || (process.env.VERCEL ? "/tmp/codigoia-metrics" : path.join(process.cwd(), "data"));
 const DATA_FILE = path.join(DATA_DIR, "export-metrics.json");
 
 const NEON_SQL_ENDPOINT = process.env.NEON_SQL_ENDPOINT?.trim() ?? "";
