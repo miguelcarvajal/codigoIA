@@ -117,3 +117,172 @@ button:disabled {
   color: #2f3a49;
   font-weight: 500;
 }
+
+.admin-shell {
+  min-height: 100vh;
+  padding: 1rem;
+  display: grid;
+  gap: 1rem;
+}
+
+.admin-topbar {
+  background: #fff;
+  border: 1px solid #dbe1ea;
+  border-radius: 16px;
+  padding: 1rem;
+  display: grid;
+  gap: 1rem;
+}
+
+.admin-topbar h1 {
+  margin: 0 0 0.4rem;
+  font-size: clamp(1.2rem, 3vw, 1.7rem);
+}
+
+.admin-topbar p {
+  margin: 0;
+  color: #475467;
+}
+
+.admin-auth {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.admin-auth input {
+  width: 100%;
+}
+
+.admin-error {
+  margin: 0;
+  color: #b91c1c;
+  font-weight: 600;
+}
+
+.admin-meta {
+  background: #fff;
+  border: 1px solid #e4e7ec;
+  border-radius: 12px;
+  padding: 0.75rem 1rem;
+  display: grid;
+  gap: 0.35rem;
+  color: #344054;
+}
+
+.admin-stats {
+  display: grid;
+  gap: 0.8rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.stat-box {
+  border: 1px solid #dbe1ea;
+  background: #fff;
+  border-radius: 14px;
+  padding: 0.9rem;
+}
+
+.stat-label {
+  font-size: 0.82rem;
+  color: #667085;
+}
+
+.stat-value {
+  font-size: 1.8rem;
+  font-weight: 800;
+  line-height: 1.05;
+}
+
+.admin-panel {
+  background: #fff;
+  border: 1px solid #dbe1ea;
+  border-radius: 16px;
+  padding: 1rem;
+}
+
+.admin-panel h2 {
+  margin: 0 0 0.8rem;
+  font-size: 1rem;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.admin-table th,
+.admin-table td {
+  text-align: left;
+  border-bottom: 1px solid #eaecf0;
+  padding: 0.5rem;
+  vertical-align: top;
+}
+
+.compact td,
+.compact th {
+  white-space: nowrap;
+}
+
+.logs-table td:nth-child(11),
+.logs-table td:nth-child(12),
+.logs-table td:nth-child(13) {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mobile-cards {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.log-card {
+  border: 1px solid #eaecf0;
+  border-radius: 12px;
+  padding: 0.75rem;
+  display: grid;
+  gap: 0.25rem;
+}
+
+.log-card p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.desktop-only {
+  display: none;
+}
+
+@media (min-width: 900px) {
+  .admin-shell {
+    padding: 1.4rem;
+  }
+
+  .admin-topbar {
+    grid-template-columns: 1fr auto;
+    align-items: end;
+  }
+
+  .admin-auth {
+    grid-template-columns: minmax(320px, 460px) auto;
+    align-items: center;
+  }
+
+  .admin-stats {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .desktop-only {
+    display: block;
+  }
+
+  .mobile-cards {
+    display: none;
+  }
+}

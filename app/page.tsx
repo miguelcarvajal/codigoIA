@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 
 type ExportFormat = "csv" | "json" | "markdown" | "pdf";
 
@@ -16,6 +16,15 @@ export default function Home() {
   const [format, setFormat] = useState<ExportFormat>("csv");
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<string>("");
+
+  useEffect(() => {
+    void fetch("/api/visit", {
+      method: "POST",
+      keepalive: true,
+    }).catch(() => {
+      // Ignorado: no afecta la experiencia de exportacion.
+    });
+  }, []);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();

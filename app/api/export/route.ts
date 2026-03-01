@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { startExportTracking, trackExportError, trackExportSuccess } from "@/lib/exportMetrics";
 
 type ExportFormat = "csv" | "json" | "markdown" | "pdf";
 
@@ -55,17 +56,21 @@ const ALLOWED_DOMAINS = [
   "huelva24.com",
 ];
 
-const MAX_ARTICLES = 60;
-const MAX_PAGES = 40;
+const MAX_ARTICLES = 100;
+const MAX_PAGES = 200;
 const ENRICH_CONCURRENCY = 6;
 
 export async function POST(request: NextRequest) {
+  let trackingContext: Awaited<ReturnType<typeof startExportTracking>> | null = null;
+
   try {
     const body = (await request.json()) as { authorUrl?: string; format?: ExportFormat };
     const authorUrl = body.authorUrl?.trim();
     const format = body.format;
+    trackingContext = await startExportTracking(request, { authorUrl, format });
 
     if (!authorUrl || !format) {
+      await trackExportError(trackingContext, { httpStatus: 400, error: "Debes indicar URL y formato." });
       return NextResponse.json({ error: "Debes indicar URL y formato." }, { status: 400 });
     }
 
@@ -74,6 +79,10 @@ export async function POST(request: NextRequest) {
     const enrichedArticles = await enrichArticles(baseArticles, context.authorName, context);
 
     if (enrichedArticles.length === 0) {
+      await trackExportError(trackingContext, {
+        httpStatus: 404,
+        error: "No se han encontrado artículos en la página de autor indicada.",
+      });
       return NextResponse.json(
         { error: "No se han encontrado artículos en la página de autor indicada." },
         { status: 404 },
@@ -87,14 +96,20 @@ export async function POST(request: NextRequest) {
       ? file.content
       : new Blob([toArrayBuffer(file.content)], { type: file.contentType });
 
-    return new NextResponse(payload, {
+    const response = new NextResponse(payload, {
       headers: {
         "Content-Type": file.contentType,
         "Content-Disposition": `attachment; filename="articulos-vocento.${extension}"`,
       },
     });
+
+    await trackExportSuccess(trackingContext, { httpStatus: 200, articles: enrichedArticles.length });
+    return response;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Error desconocido";
+    if (trackingContext) {
+      await trackExportError(trackingContext, { httpStatus: 400, error: message });
+    }
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }
@@ -249,8 +264,13 @@ function withPaginaPath(base: URL, page: number): URL {
 }
 
 async function fetchPayload(url: string, baseUrl: URL): Promise<FetchPayload | null> {
+  const parsed = normalizeUrl(url, baseUrl);
+  if (!parsed || !isSameVocentoFamilyHost(parsed.hostname)) {
+    return null;
+  }
+
   try {
-    const response = await fetch(url, {
+    const response = await fetch(parsed.toString(), {
       headers: {
         "User-Agent": "Mozilla/5.0 (compatible; VocentoArticleExporter/1.0)",
         Accept: "text/html,application/xhtml+xml,application/xml,application/json",
