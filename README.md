@@ -11,7 +11,7 @@ Web app en Next.js para que redactores de periódicos del grupo Vocento descargu
   - JSON
   - Markdown
   - PDF
-- Interfaz accesible, simple y rápida.
+- Interfaz accesible, simple y rápida, y molona.
 
 ## Requisitos
 
